@@ -3,9 +3,8 @@
 .  
 ├── README.md  
 ├── notebooks  
-│   └── web_scraping.ipynb  
+│   └── web_scraping.ipynb  
 └── scripts  
-    ├── data.csv  
     ├── gebiz_scraping.py  
     └── web_scraping.py  
 
@@ -15,4 +14,4 @@ However, after the navigation is complete, we will complement the scripting with
 This is script can be uploaded to an automation orchestration framework such as Airflow on Kubernetes to be run periodically.  
 It is also possible to allow the automated upload of the csv to some user friendly source such as Google Sheets.
 
-Note: if you want to witness the interaction so as to debug, comment out the headless option. However, to use the headless option properly, please uncomment out the display specifics in the next line.
+*Note: if you want to witness the interaction so as to debug, comment out the headless option. However, to use the headless option properly, please uncomment out the display specifics in the next line.*
