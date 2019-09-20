@@ -1,11 +1,13 @@
 # Side Scraping Project
 
-.
-├── README.md
-├── data.csv
-├── gebiz_scraping.py
-├── web_scraping.ipynb
-└── web_scraping.py
+.  
+├── README.md  
+├── notebooks  
+│   └── web_scraping.ipynb  
+└── scripts  
+    ├── data.csv  
+    ├── gebiz_scraping.py  
+    └── web_scraping.py  
 
 The aim of this project is to use selenium to interact with websites who have require clicking and navigations that are hidden due to AJAX or Javascript.  
 However, after the navigation is complete, we will complement the scripting with beautifulsoup4 to do the actual parsing of the website.
