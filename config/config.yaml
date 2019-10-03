@@ -1,0 +1,15 @@
+url: https://www.gebiz.gov.sg/ptn/opportunity/BOListing.xhtml?origin=search
+csvname: data/data.csv
+csvheaders:
+  refno: Reference Number
+  curstatus: Current Status
+  projtype: Project Type
+  projname: Project Name
+  agency: Agency
+  pubdate: Published Date
+  procurecat: Procurement Category
+  closeddate: Closed Date
+  qualstatus: Qualification Criteria
+  resp: Respondents
+  awardedto: Awarded To
+  awardedval: Awarded Value (SGD)

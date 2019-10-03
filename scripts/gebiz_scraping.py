@@ -1,21 +1,27 @@
+import copy
+import csv
+import logging
+import os
+import re
+import sys
+import time
+import traceback
+from pprint import pformat
+from random import randint
+from types import SimpleNamespace
+
+import numpy as np
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as ec
+from selenium.webdriver.support.ui import WebDriverWait
+from yaml import Loader, load
 
-from bs4 import BeautifulSoup
-import requests
-
-import re, sys, os, traceback, logging
-import time
-import csv
-from pprint import pformat
-from random import randint
-import numpy as np
-import pandas as pd
-
-## Logger --------------------------------------------------------------------------------------
+# Logger -----------------------------------------------------------------------------------------------
 try:
     import colorlog
     HAVE_COLORLOG = True
@@ -44,34 +50,58 @@ def create_logger():
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     log.addHandler(stream_handler)
-    return logging.getLogger(__name__) 
+    return logging.getLogger(__name__)
 
 logger = create_logger()
 
-## Main Method ---------------------------------------------------------------------------------
-def gebiz_scraping(url, headers, csvname):
+# Main Method --------------------------------------------------------------------------------------------
+def main():
+    config = load(open('config/config.yaml'), Loader=Loader)
+    full_scraping = gebiz_scraping(**config)
+    if full_scraping:
+        export_csv(df_dict, config['csvname'])
+
+    # # Print the dataset for visuals
+    # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+    #     logger.info(df)
+
+# Gebiz Scraping Method ----------------------------------------------------------------------------------
+def gebiz_scraping(url, csvname, csvheaders):
     """
     Scraping Workflow will be placed here with necessary headers and url link.
-    Exporting to CSV will be done outside of the function.
+    Exporting to CSV will be done regularly in this function.
+    Return True or False instead, to signify the complete scrape of the websites or not.
     """
+    # Create NameSpace to call Headers
+    global headertuple
+    headertuple = SimpleNamespace(**csvheaders)
+
+    # Start Browser
     options = Options()
     options.headless = True
     options.add_argument("--window-size=1920,1920")
     options.add_argument("--incognito")
-    driver = webdriver.Chrome(options=options, executable_path=r'/usr/local/bin/chromedriver')
+    driver = webdriver.Chrome(
+        options=options, executable_path=r'/usr/local/bin/chromedriver')
     driver.get(url)
 
-    # @name='contentForm:j_idt202_selectManyMenu_BUTTON'
-    menu_button = driver.find_elements_by_xpath("//input[@class='selectManyMenu_BUTTON' and @value='All' and @type='button']")[2]
+    # Click to the menu page
+    menu_button = driver.find_elements_by_xpath(
+        "//input[@class='selectManyMenu_BUTTON' and @value='All' and @type='button']")[2]
     menu_button.click()
 
     # Make script wait for page to load for the filter options to appear
-    wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located((By.XPATH, "//input[contains(@name, 'GroupOption_Construction') and @value='Construction']")))
+    wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located(
+        (By.XPATH, "//input[contains(@name, 'GroupOption_Construction') and @value='Construction']")))
 
-    filter_button = driver.find_element_by_xpath("//input[contains(@name, 'GroupOption_Construction') and @value='Construction']")
+    # Activate the Construction Filter
+    filter_button = driver.find_element_by_xpath(
+        "//input[contains(@name, 'GroupOption_Construction') and @value='Construction']")
     filter_button.click()
 
-    closed_button = driver.find_element_by_xpath("//input[@class='formTabBar_TAB-BUTTON' and contains(@value, 'Closed')]")
+    # Go to the Closed Tab
+    closed_button = driver.find_element_by_xpath(
+        "//input[@class='formTabBar_TAB-BUTTON' and contains(@value, 'Closed')]")
     closed_button.click()
 
     # Make script wait for page to load
@@ -79,73 +109,20 @@ def gebiz_scraping(url, headers, csvname):
         @disabled='disabled']")))
 
     # Make script wait for page to load for the filter to work
-    wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located((By.XPATH, "//tr[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Civil Engineering']")))
+    wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located(
+        (By.XPATH, "//tr[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Civil Engineering']")))
 
-    # Full Dataset 
+    # Full Dataset
     # If there is an existing csv, simply open the whole thing in pandas
-    # It is actually better to save the results as a list of dictionaries and then convert ot df back later for faster processing
+    # It is actually better to save the results as a dictionary of dictionaries and then convert to df back later for faster processing
+    global df_dict
     if os.path.exists(csvname):
-        df = pd.read_csv(csvname, header=0, index_col=[0])
-        df_dict = df.to_dict('records')
+        df = pd.read_csv(csvname, header=0).set_index(headertuple.refno)
+        df_dict = df.T.to_dict('dict')
     else:
-        df_dict = []
-        
-    # Do a skip_counter to skip and go back to whereever it is stopped in the first place.
-    # Do not count headers, but include one extra cos when the rows hit 10, it should go to the next page. 
-    skip_counter = len(df_dict)
-    logger.info('Existing Rows in CSV: %s'  % skip_counter)
+        df_dict = {}
 
-    # Open the current csvfile, skip to the latest row and start from there by selenium in mulitples of 10 or whatever length each view has.
-    try:
-        lenlinks = len(driver.find_elements_by_xpath("//a[contains(@class, 'commandLink_TITLE-') and @href='#' and @type='link']"))
-        logger.info('Page Link Numbers: %s' % lenlinks)
-
-        while skip_counter >= lenlinks and skip_counter > 0:
-            # Grab all Reference Numbers from the navigation page
-            navigation_soup = BeautifulSoup(driver.page_source, 'html.parser')
-            referencenumbers = navigation_soup.find_all(name='div', class_='formSectionHeader6_TEXT')
-            referencenumbers = list(map(lambda x: x.text, referencenumbers))
-
-            # When next button is unclickable, simply break the loop
-            try:
-                next_button = driver.find_element_by_xpath("//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")
-                next_button.click()
-                logger.info('Going Next Page cos it has already been scraped.')
-                time.sleep(3)
-
-                # Make sure the page is reloaded with new links, then go next
-                wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located((By.XPATH, "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")))
-                next_counter=0
-                while True:
-                    # Grab all Reference Numbers from the navigation page
-                    new_navigation = BeautifulSoup(driver.page_source, 'html.parser')
-                    newnumbers = new_navigation.find_all(name='div', class_='formSectionHeader6_TEXT')
-                    newnumbers = list(map(lambda x: x.text, newnumbers))
-                    if next_counter == 3:
-                        logger.info('Iterating too many times. Breaking loop.')
-                        driver.quit()
-                        return df_dict
-
-                    if newnumbers[0] == referencenumbers[0]:
-                        logger.warning('The page is not loaded properly yet after pressing Next. Wait a moment.')
-                        next_counter+=1
-                        time.sleep(5)
-                    else:
-                        break
-
-            # If next button cannot be pressed here, the whole script should stop.
-            except Exception as e:
-                logger.info(e)
-                logger.info("Reached The End of The Search Results.")
-                driver.quit()
-                return df_dict
-
-            # Reduce by the number of links skipped
-            skip_counter -= lenlinks
-            logger.info("Skip Row Count left: %s" % skip_counter)
-
-    except Exception as e:
-        logger.info(e)
+    logger.info('Existing Rows in CSV: %s' % len(df_dict))
 
     # Do a loop here to click Next after all links are clicked
     try:
@@ -153,32 +130,16 @@ def gebiz_scraping(url, headers, csvname):
             # First I have to collect the links for each button to be clicked.
             # Click to link -> Grab information --> Click to Back Search Results --> Go to next button to click.
             # The link can become stale. So, lets maintain a counter instead.
-            lenlinks = len(driver.find_elements_by_xpath("//a[contains(@class, 'commandLink_TITLE-') and @href='#' and @type='link']"))
-            
+            lenlinks = len(driver.find_elements_by_xpath(
+                "//a[contains(@class, 'commandLink_TITLE-') and @href='#' and @type='link']"))
+
             # Grab all Reference Numbers from the navigation page
             navigation_soup = BeautifulSoup(driver.page_source, 'html.parser')
-            referencenumbers = navigation_soup.find_all(name='div', class_='formSectionHeader6_TEXT')
-            referencenumbers = list(map(lambda x: x.text, referencenumbers))
+            referencenumbers = find_values_in_navigation(navigation_soup, 'div', 'formSectionHeader6_TEXT')
+            # Grab all Statuses from the navigation page
+            current_statuses = find_values_in_navigation(navigation_soup, 'div', 'label_MAIN label_WHITE-ON-.*')
 
             for index in range(lenlinks):
-                if skip_counter > 0:
-                    skip_counter -= 1
-                    logger.info('Skipping current link.')
-                    logger.info('Skip Row Count Left: %s' % skip_counter)
-                    continue
-
-                # Wait for page to come back to filtered results
-                wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located((By.XPATH, "//tr[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Civil Engineering']")))
-                
-                link = driver.find_elements_by_xpath("//a[contains(@class, 'commandLink_TITLE-') and @href='#' and @type='link']")[index]
-                driver.execute_script("arguments[0].click();", link)
-
-                # Wait for link to load
-                wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located((By.XPATH, "//input[@class='formTabBar_TAB-BUTTON-ACTIVE' and @value='Overview' and @type='submit']")))
-
-                # Start BeautifulSoup
-                content_soup = BeautifulSoup(driver.page_source, 'html.parser')
-
                 # Project Type and Reference Number
                 referencenumber = referencenumbers[index]
                 projecttype, referencenumber = referencenumber.split('-', 1)
@@ -186,45 +147,59 @@ def gebiz_scraping(url, headers, csvname):
                 referencenumber = referencenumber.strip()
                 logger.info("Reference Number %s" % referencenumber)
 
+                # Current Status
+                current_status = current_statuses[index]
+
+                # Skip those who are already scraped and there is no change
+                if duplicate_entry(referencenumber, projecttype, current_status, df_dict):
+                    logger.info("Project has been scraped. Moving onto next project... \n")
+                    continue
+
                 # Append into a row dictionary
                 # New row to be built
-                row = {key: None for key in headers}
-                row['Project Type'] = projecttype
-                row['Reference Number'] = referencenumber
-                
+                row = {key: None for key in csvheaders.values()}
+                row.pop(headertuple.refno, None)
+
+                # Append Status and Project Type
+                row[headertuple.curstatus] = current_status
+                row[headertuple.projtype] = projecttype
+
                 # Rest of the attributes
-                result = individual_page_scraping(row, referencenumber, projecttype, content_soup, driver)
+                result = individual_page_scraping(index, row, headertuple, \
+                    referencenumber, projecttype, current_status, driver)
 
                 # If result is False, end the whole program
                 if not result:
                     driver.quit()
-                    return df_dict
+                    return False
 
                 logger.info('')
                 logger.info('Page Link Number: %s' % index)
                 for line in pformat(row).split('\n'):
-                    logging.info(line)
+                    logger.info(line)
                 logger.info('\n')
 
                 # # Append it back to Dataset and export it continuously - This slows down the process a lot but it is necessary to maintain all the rows so we don't do extra work.
-                df_dict.append(row)
-                df = pd.DataFrame(df_dict)
-                df.to_csv(csvname, index=True)
+                df_dict[referencenumber] = row
+                export_csv(df_dict, csvname)
 
                 # Sleep here to prevent suspicious bot activities
-                time.sleep(randint(1,4))
+                time.sleep(randint(1, 4))
 
                 # Go back to Search Results
-                back_button = driver.find_element_by_xpath("//input[contains(@class, 'commandButton_BACK-') and @value='Back to Search Results' and @type='submit']")
+                back_button = driver.find_element_by_xpath(
+                    "//input[contains(@class, 'commandButton_BACK-') and @value='Back to Search Results' and @type='submit']")
                 back_button.click()
-                
+
                 # Sleep here to prevent suspicious bot activities
-                time.sleep(randint(1,2))
-            
+                time.sleep(randint(1, 2))
+
             # When next button is unclickable, simply break the loop
-            wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located((By.XPATH, "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")))
+            wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located(
+                (By.XPATH, "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")))
             try:
-                next_button = driver.find_element_by_xpath("//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")
+                next_button = driver.find_element_by_xpath(
+                    "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")
                 next_button.click()
                 logger.info('Going Next Page \n')
                 time.sleep(3)
@@ -233,42 +208,63 @@ def gebiz_scraping(url, headers, csvname):
                 next_counter = 0
                 while True:
                     # Grab all Reference Numbers from the navigation page
-                    new_navigation = BeautifulSoup(driver.page_source, 'html.parser')
-                    newnumbers = new_navigation.find_all(name='div', class_='formSectionHeader6_TEXT')
+                    new_navigation = BeautifulSoup(
+                        driver.page_source, 'html.parser')
+                    newnumbers = new_navigation.find_all(
+                        name='div', class_='formSectionHeader6_TEXT')
                     newnumbers = list(map(lambda x: x.text, newnumbers))
                     if next_counter == 3:
                         logger.info('Iterating too many times. Breaking loop.')
                         driver.quit()
-                        return df_dict
+                        return False
 
                     if newnumbers[0] == referencenumbers[0]:
-                        logger.warning('The page is not loaded properly yet after pressing Next. Wait a moment.')
-                        next_counter+=1
+                        logger.warning(
+                            'The page is not loaded properly yet after pressing Next. Wait a moment.')
+                        next_counter += 1
                         time.sleep(5)
                     else:
                         break
             except:
                 logger.info("Reached The End of The Search Results.")
                 break
-    
+
     except Exception as e:
         driver.quit()
         logger.info(e)
         logger.info(traceback.print_tb(e.__traceback__))
-        return df_dict
+        return False
 
     # Stop Driver
     driver.quit()
-    return df_dict
+    return True
 
-## Helper Methods ------------------------------------------------------------------------------
-def individual_page_scraping(row, referencenumber, projecttype, content_soup, driver):
+
+# Individual Page Scraping -------------------------------------------------------------------------------
+def individual_page_scraping(index, row, headertuple, referencenumber, projecttype, current_status, driver):
     """
     For BS4 Scraping for each page
     """
-    # Project Name 
+    # Wait for page to come back to filtered results
+    wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located(
+        (By.XPATH, "//tr[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Civil Engineering']")))
+
+    # Click onto the current link
+    link = driver.find_elements_by_xpath(
+        "//a[contains(@class, 'commandLink_TITLE-') and @href='#' and @type='link']")[index]
+    driver.execute_script("arguments[0].click();", link)
+
+    # Wait for link to load
+    wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located(
+        (By.XPATH, "//input[@class='formTabBar_TAB-BUTTON-ACTIVE' and @value='Overview' and @type='submit']")))
+
+    # Start BeautifulSoup
+    content_soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+    # Project Name
     projectname_regex = re.compile(".*formOutputText_.* outputText_TITLE-.*")
-    projectname = content_soup.find('div', attrs={'class': projectname_regex}).text
+    projectname = content_soup.find(
+        'div', attrs={'class': projectname_regex}).text
 
     # Agency
     agency = find_value_via_row(content_soup, 'Agency')
@@ -277,24 +273,29 @@ def individual_page_scraping(row, referencenumber, projecttype, content_soup, dr
     published_date = find_value_via_row(content_soup, 'Published')
 
     # Procurement Category
-    procurement_category = find_value_via_row(content_soup, 'Procurement Category')
+    procurement_category = find_value_via_row(
+        content_soup, 'Procurement Category')
 
     # Closed Date
     closed_text = content_soup.find(text='Closed')
-    closed_section = closed_text.find_parent('table', attrs={'class': 'form2_ROW-TABLE'})
+    closed_section = closed_text.find_parent(
+        'table', attrs={'class': 'form2_ROW-TABLE'})
     closed_section = closed_section.find_parent('tbody')
     closed_regex = re.compile('formOutputText_HIDDEN-LABEL outputText_NAME-.*')
-    closed_date = closed_section.find('div', attrs={'class': closed_regex}).text
+    closed_date = closed_section.find(
+        'div', attrs={'class': closed_regex}).text
     closed_date = '%s %s' % (closed_date[:-7], closed_date[-7:])
 
-    # Current Status
-    status_regex = re.compile('label_MAIN label_.*')
-    current_status = content_soup.find('div', attrs={'class': status_regex}).text
+    # # Current Status
+    # status_regex = re.compile('label_MAIN label_.*')
+    # current_status = content_soup.find(
+    #     'div', attrs={'class': status_regex}).text
 
     # Qualification Criteria
     # This only applies if the project type is qualification.
     if projecttype.lower() == 'qualification':
-        qualification_criteria = find_value_via_row(content_soup, 'Qualification Criteria')
+        qualification_criteria = find_value_via_row(
+            content_soup, 'Qualification Criteria')
 
     else:
         qualification_criteria = 'Not Applicable'
@@ -304,10 +305,12 @@ def individual_page_scraping(row, referencenumber, projecttype, content_soup, dr
 
     try:
         # Click to next tab
-        respondent_button = driver.find_element_by_xpath("//input[contains(@value, 'Respondents') and @class='formTabBar_TAB-BUTTON' and @type='submit']")
+        respondent_button = driver.find_element_by_xpath(
+            "//input[contains(@value, 'Respondents') and @class='formTabBar_TAB-BUTTON' and @type='submit']")
         respondent_button.click()
         # Wait for it to load to the next tab
-        wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located((By.XPATH, "//input[@class='formTabBar_TAB-BUTTON-ACTIVE' and contains(@value, 'Respondents') and @type='submit' and @disabled='disabled']")))
+        wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located(
+            (By.XPATH, "//input[@class='formTabBar_TAB-BUTTON-ACTIVE' and contains(@value, 'Respondents') and @type='submit' and @disabled='disabled']")))
 
     except:
         respondents_string = 'No Respondents'
@@ -317,17 +320,21 @@ def individual_page_scraping(row, referencenumber, projecttype, content_soup, dr
         respondent_counter = 0
         while True:
             # Sleep here to prevent suspicious bot activities
-            time.sleep(randint(1,2))
+            time.sleep(randint(1, 2))
 
-            respondent_content = BeautifulSoup(driver.page_source, 'html.parser')
+            respondent_content = BeautifulSoup(
+                driver.page_source, 'html.parser')
 
             # Grab the total number of respondents who responded to compare with the number of respondents we have
             try:
                 respondent_number_regex = re.compile('.*outputText_TITLE-.*')
-                respondent_number = respondent_content.find('span', attrs={'class': respondent_number_regex}).text
+                respondent_number = respondent_content.find(
+                    'span', attrs={'class': respondent_number_regex}).text
             except:
-                respondent_number_regex = re.compile('formOutputText_HIDDEN-LABEL outputText_TITLE-.*')
-                respondent_number = respondent_content.find_all('div', attrs={'class': respondent_number_regex})[1].text
+                respondent_number_regex = re.compile(
+                    'formOutputText_HIDDEN-LABEL outputText_TITLE-.*')
+                respondent_number = respondent_content.find_all(
+                    'div', attrs={'class': respondent_number_regex})[1].text
             # logger.info("Respondent Statement %s" % respondent_number)
 
             # Stop everything when there is no supplier responded
@@ -337,7 +344,8 @@ def individual_page_scraping(row, referencenumber, projecttype, content_soup, dr
 
             try:
                 # If there is no respondent cos the page has not loaded, this will throw an error to restart the loop
-                respondent_number = int(re.sub("[^0-9]", "", respondent_number))
+                respondent_number = int(
+                    re.sub("[^0-9]", "", respondent_number))
                 # logger.info("Respondent Number: %s" % respondent_number)
             except:
                 if respondent_counter == 3:
@@ -345,32 +353,38 @@ def individual_page_scraping(row, referencenumber, projecttype, content_soup, dr
                     driver.quit()
                     return False
 
-                respondent_counter+=1
-                logger.warning('Respondent Page not loaded properly. Wait a moment.')
+                respondent_counter += 1
+                logger.warning(
+                    'Respondent Page not loaded properly. Wait a moment.')
                 continue
-            
+
             # There are different format for different status (I believe) thus must handle differently
             if current_status.lower() == 'closed':
                 # logger.info('Respondents - Status is closed')
-                respondent_section = respondent_content.find('table', attrs={'class': 'formContainer_TABLE'})
+                respondent_section = respondent_content.find(
+                    'table', attrs={'class': 'formContainer_TABLE'})
                 # logger.info(respondent_section)
-                respondents_divs = respondent_section.find_all('div', attrs={'class': 'formRow_HIDDEN-LABEL'})
+                respondents_divs = respondent_section.find_all(
+                    'div', attrs={'class': 'formRow_HIDDEN-LABEL'})
                 # logger.info(respondents_divs)
-                respondents = list(map(lambda x: x.find('span'), respondents_divs))
+                respondents = list(
+                    map(lambda x: x.find('span'), respondents_divs))
                 # logger.info(respondents)
                 respondents = list(map(lambda x: x.text, respondents))
                 # logger.info(respondents)
             else:
-                respondent_section_regex = re.compile('accordion2_formAccordionGroup_BODY-CONTENT')
+                # respondent_section_regex = re.compile(
+                #     'accordion2_formAccordionGroup_BODY-CONTENT')
                 # logger.info('Respondents - Status is not closed')
                 # respondent_section = respondent_content.find('div', attrs={'id': respondent_section_regex, 'class': 'formAccordionGroup_BODY-CONTENT-DIV'})
                 # logger.info(respondent_section)
                 respondent_regex = re.compile('.*_title-text')
-                respondents = respondent_content.find_all('div', attrs={'id': respondent_regex, 'class': 'formAccordion_TITLE-TEXT'})
+                respondents = respondent_content.find_all(
+                    'div', attrs={'id': respondent_regex, 'class': 'formAccordion_TITLE-TEXT'})
                 # logger.info(respondents)
                 respondents = list(map(lambda x: x.text, respondents))
                 # logger.info(respondents)
-            
+
             # Convert list to string
             respondents_string = '; '.join(respondents)
 
@@ -378,38 +392,44 @@ def individual_page_scraping(row, referencenumber, projecttype, content_soup, dr
             if respondent_number == int(len(respondents)):
                 break
             else:
-                logger.warning("Numbers do not match. Actual Number is: %s" % int(len(respondents)))
+                logger.warning(
+                    "Numbers do not match. Actual Number is: %s" % int(len(respondents)))
                 logger.info(referencenumber)
-                respondent_counter+=1
+                respondent_counter += 1
                 time.sleep(3)
 
     if current_status.lower() == 'awarded':
         # Click to next tab
-        award_button = driver.find_element_by_xpath("//input[contains(@value, 'Award') and @class='formTabBar_TAB-BUTTON' and @type='submit']")
+        award_button = driver.find_element_by_xpath(
+            "//input[contains(@value, 'Award') and @class='formTabBar_TAB-BUTTON' and @type='submit']")
         award_button.click()
 
         # Wait for it to load to the next tab
-        wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located((By.XPATH, "//input[@class='formTabBar_TAB-BUTTON-ACTIVE' and contains(@value, 'Award') and @type='submit' and @disabled='disabled']")))
+        wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located(
+            (By.XPATH, "//input[@class='formTabBar_TAB-BUTTON-ACTIVE' and contains(@value, 'Award') and @type='submit' and @disabled='disabled']")))
 
         # Ensure there is a value no matter what.
         awarded_counter = 0
         while True:
             # Sleep here to prevent suspicious bot activities
-            time.sleep(randint(1,2))
+            time.sleep(randint(1, 2))
 
             award_content = BeautifulSoup(driver.page_source, 'html.parser')
-            
+
             # Awarded To
             award_section = award_content.find(text='Awarded to')
             award_parent = award_section.find_parent('table')
             award_parent = award_parent.find_parent('table')
-            awarded_regex = re.compile('formOutputText_HIDDEN-LABEL outputText_TITLE-.*')
-            awarded_to = award_parent.find('div', attrs={'class': awarded_regex}).text
+            awarded_regex = re.compile(
+                'formOutputText_HIDDEN-LABEL outputText_TITLE-.*')
+            awarded_to = award_parent.find(
+                'div', attrs={'class': awarded_regex}).text
             # logger.info('Award To Text %s' % awarded_to)
 
             # Awarded Value
             value_regex = re.compile('formOutputText_VALUE-DIV.*')
-            awarded_value = award_parent.find('div', attrs={'class': value_regex}).text
+            awarded_value = award_parent.find(
+                'div', attrs={'class': value_regex}).text
             # logger.info('Award Value Text %s' % awarded_value)
             # Convert to Float
             awarded_value = float(re.sub(r'[^\d\-.]', '', awarded_value))
@@ -418,32 +438,36 @@ def individual_page_scraping(row, referencenumber, projecttype, content_soup, dr
             if awarded_to and (awarded_value or awarded_value == 0):
                 break
             else:
-                logger.info('Award value (%s) or Awarded To (%s) is / are not present.' % (awarded_value, awarded_to))
+                logger.info('Award value (%s) or Awarded To (%s) is / are not present.' %
+                            (awarded_value, awarded_to))
                 if awarded_counter == 3:
                     logger.info('Iterating too many times. Breaking loop.')
                     driver.quit()
                     return False
 
-                awarded_counter+=1
-                logger.warning('Awarded Page not loaded properly. Wait a moment.')
+                awarded_counter += 1
+                logger.warning(
+                    'Awarded Page not loaded properly. Wait a moment.')
 
     else:
         awarded_to = 'Not Applicable'
         awarded_value = 'Not Applicable'
 
-    row['Project Name'] = projectname
-    row['Agency'] = agency
-    row['Published Date'] = published_date
-    row['Procurement Category'] = procurement_category
-    row['Closed Date'] = closed_date
-    row['Current Status'] = current_status
-    row['Qualification Criteria'] = qualification_criteria
-    row['Respondents'] = respondents_string
-    row['Awarded To'] = awarded_to
-    row['Awarded Value (SGD)'] = awarded_value
+    row[headertuple.projname] = projectname
+    row[headertuple.agency] = agency
+    row[headertuple.pubdate] = published_date
+    row[headertuple.procurecat] = procurement_category
+    row[headertuple.closeddate] = closed_date
+    # row[headertuple.curstatus] = current_status
+    row[headertuple.qualstatus] = qualification_criteria
+    row[headertuple.resp] = respondents_string
+    row[headertuple.awardedto] = awarded_to
+    row[headertuple.awardedval] = awarded_value
 
     return True
 
+
+# Helper Methods -----------------------------------------------------------------------------------------
 def find_value_via_row(soup, header_text):
     """
     Helper Method to find specific content
@@ -453,21 +477,112 @@ def find_value_via_row(soup, header_text):
     value = parent.find('div', class_='formOutputText_VALUE-DIV').text
     return value
 
-## Script to Run
-if __name__ == '__main__':
+def find_values_in_navigation(soup, filter_type, filter_text):
+    """
+    Search via _class, but we can change it to XPATH if needed.
+    Returns a list of all the values we found as this is scraping at the navigation page.
+    """
+    regex = re.compile(filter_text)
+    results = soup.find_all(filter_type, attrs={'class': regex})
+    results = list(map(lambda x: x.text, results))
 
-    url = 'https://www.gebiz.gov.sg/ptn/opportunity/BOListing.xhtml?origin=search'
+    return results
+
+def skip_rows(skip_counter, driver):
+    """
+    Skip rows depending on how many is already scraped.
+    Return True when the skip is done. 
+    """
+    # Open the current csvfile, skip to the latest row and start from there by selenium in mulitples of 10 or whatever length each view has.
+    try:
+        lenlinks = len(driver.find_elements_by_xpath(
+            "//a[contains(@class, 'commandLink_TITLE-') and @href='#' and @type='link']"))
+        logger.info('Page Link Numbers: %s' % lenlinks)
+
+        while skip_counter >= lenlinks and skip_counter > 0:
+            # Grab all Reference Numbers from the navigation page
+            navigation_soup = BeautifulSoup(driver.page_source, 'html.parser')
+            referencenumbers = navigation_soup.find_all(
+                name='div', class_='formSectionHeader6_TEXT')
+            referencenumbers = list(map(lambda x: x.text, referencenumbers))
+
+            # When next button is unclickable, simply break the loop
+            try:
+                next_button = driver.find_element_by_xpath(
+                    "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")
+                next_button.click()
+                logger.info('Going Next Page cos it has already been scraped.')
+                time.sleep(3)
+
+                # Make sure the page is reloaded with new links, then go next
+                wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located(
+                    (By.XPATH, "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")))
+                next_counter = 0
+                while True:
+                    # Grab all Reference Numbers from the navigation page
+                    new_navigation = BeautifulSoup(
+                        driver.page_source, 'html.parser')
+                    newnumbers = new_navigation.find_all(
+                        name='div', class_='formSectionHeader6_TEXT')
+                    newnumbers = list(map(lambda x: x.text, newnumbers))
+                    if next_counter == 3:
+                        logger.info('Iterating too many times. Breaking loop.')
+                        driver.quit()
+                        return False
+
+                    if newnumbers[0] == referencenumbers[0]:
+                        logger.warning(
+                            'The page is not loaded properly yet after pressing Next. Wait a moment.')
+                        next_counter += 1
+                        time.sleep(5)
+                    else:
+                        break
+
+            # If next button cannot be pressed here, the whole script should stop.
+            except Exception as e:
+                logger.info(e)
+                logger.info("Reached The End of The Search Results.")
+                driver.quit()
+                return False
+
+            # Reduce by the number of links skipped
+            skip_counter -= lenlinks
+            logger.info("Skip Row Count left: %s" % skip_counter)
+
+    except Exception as e:
+        logger.info(e)
+
+    finally:
+        return True
+
+def duplicate_entry(referencenumber, projecttype, status, df_dict):
+    """
+    Determine if the row needs to be scraped again or not. 
+    This can be done by checking the reference number, projecttype and the status of the project.
+    """
+    if referencenumber in df_dict:
+        if df_dict[referencenumber][headertuple.curstatus] == status and \
+            df_dict[referencenumber][headertuple.projtype] == projecttype:
+            return True
     
-    headers = ['Project Type', 'Reference Number', 'Project Name', 'Agency', 'Published Date', 'Procurement Category', 'Closed Date', 'Current Status', \
-        'Qualification Criteria', 'Respondents', 'Awarded To', 'Awarded Value (SGD)']
+    return False
 
-    csvname = 'data.csv'
-
-    df_dict = gebiz_scraping(url, headers, csvname)
-
-    df = pd.DataFrame(df_dict)
+def export_csv(df_dict, csvname):
+    df = pd.DataFrame(df_dict).T
+    df.index.names = [headertuple.refno]
     df.to_csv(csvname, index=True)
 
-    # # Print the dataset for visuals
-    # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-    #     logger.info(df)
+    return True
+
+def export_googlesheets():
+    """
+    Let's try to autoupdate googlesheets so this can be completely automated.
+    """
+
+
+
+
+
+# Script to Run
+if __name__ == '__main__':
+    main()
