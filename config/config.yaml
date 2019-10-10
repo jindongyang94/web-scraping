@@ -1,4 +1,5 @@
 url: https://www.gebiz.gov.sg/ptn/opportunity/BOListing.xhtml?origin=search
+
 csvname: data/data.csv
 csvheaders:
   refno: Reference Number
@@ -13,3 +14,7 @@ csvheaders:
   resp: Respondents
   awardedto: Awarded To
   awardedval: Awarded Value (SGD)
+  lastupdated: Last Updated
+
+s3bucket: hubble-datalake1
+s3path: webscraping/gebiz/data.csv

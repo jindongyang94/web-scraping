@@ -1,15 +1,19 @@
 import copy
 import csv
 import logging
+import math
 import os
 import re
+import smtplib
 import sys
 import time
 import traceback
+from datetime import date
 from pprint import pformat
 from random import randint
 from types import SimpleNamespace
 
+import boto3
 import numpy as np
 import pandas as pd
 import requests
@@ -56,24 +60,37 @@ logger = create_logger()
 
 # Main Method --------------------------------------------------------------------------------------------
 def main():
+    starttime = time.time()
+
     config = load(open('config/config.yaml'), Loader=Loader)
     full_scraping = gebiz_scraping(**config)
     if full_scraping:
-        export_csv(df_dict, config['csvname'])
+        logger.info("Process is fully completed.")
+
+    endtime = time.time()
+    duration = endtime - starttime
+
+    df = pd.read_csv(config['csvname'], header=0).set_index(config['csvheaders']['refno'])
+    df_dict = df.T.to_dict('dict')
+
+    # Upload the CSV File
+    upload_csv(config['s3bucket'], config['s3path'], config['csvname'])
+    
+    logger.info("Final Length of Projects Scraped: %s" % len(df_dict))
+    logger.info("Task Took %s min" % (duration/60))
 
     # # Print the dataset for visuals
     # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
     #     logger.info(df)
 
 # Gebiz Scraping Method ----------------------------------------------------------------------------------
-def gebiz_scraping(url, csvname, csvheaders):
+def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
     """
     Scraping Workflow will be placed here with necessary headers and url link.
     Exporting to CSV will be done regularly in this function.
     Return True or False instead, to signify the complete scrape of the websites or not.
     """
     # Create NameSpace to call Headers
-    global headertuple
     headertuple = SimpleNamespace(**csvheaders)
 
     # Start Browser
@@ -115,8 +132,8 @@ def gebiz_scraping(url, csvname, csvheaders):
     # Full Dataset
     # If there is an existing csv, simply open the whole thing in pandas
     # It is actually better to save the results as a dictionary of dictionaries and then convert to df back later for faster processing
-    global df_dict
-    if os.path.exists(csvname):
+    download = download_csv(s3bucket, s3path, csvname)
+    if download and os.path.exists(csvname):
         df = pd.read_csv(csvname, header=0).set_index(headertuple.refno)
         df_dict = df.T.to_dict('dict')
     else:
@@ -151,7 +168,7 @@ def gebiz_scraping(url, csvname, csvheaders):
                 current_status = current_statuses[index]
 
                 # Skip those who are already scraped and there is no change
-                if duplicate_entry(referencenumber, projecttype, current_status, df_dict):
+                if duplicate_entry(referencenumber, projecttype, current_status, df_dict, headertuple):
                     logger.info("Project has been scraped. Moving onto next project... \n")
                     continue
 
@@ -173,15 +190,23 @@ def gebiz_scraping(url, csvname, csvheaders):
                     driver.quit()
                     return False
 
-                logger.info('')
-                logger.info('Page Link Number: %s' % index)
-                for line in pformat(row).split('\n'):
-                    logger.info(line)
-                logger.info('\n')
+                # If result is 'skip', simply go the next link
+                if result != 'skip':
+                    # Append Today's Date
+                    today = date.today()
+                    row[headertuple.lastupdated] = str(today)
 
-                # # Append it back to Dataset and export it continuously - This slows down the process a lot but it is necessary to maintain all the rows so we don't do extra work.
-                df_dict[referencenumber] = row
-                export_csv(df_dict, csvname)
+                    # Update the dictionary and export as well.
+                    # Append it back to Dataset and export it continuously - This slows down the process a lot but it is necessary to maintain all the rows so we don't do extra work.
+                    df_dict[referencenumber] = row
+                    export_csv(df_dict, csvname, headertuple)
+
+                    # Print the rows being appended
+                    logger.info('')
+                    logger.info('Page Link Number: %s' % index)
+                    for line in pformat(row).split('\n'):
+                        logger.info(line)
+                    logger.info('\n')
 
                 # Sleep here to prevent suspicious bot activities
                 time.sleep(randint(1, 4))
@@ -197,6 +222,7 @@ def gebiz_scraping(url, csvname, csvheaders):
             # When next button is unclickable, simply break the loop
             wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located(
                 (By.XPATH, "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")))
+            end = False
             try:
                 next_button = driver.find_element_by_xpath(
                     "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")
@@ -213,6 +239,16 @@ def gebiz_scraping(url, csvname, csvheaders):
                     newnumbers = new_navigation.find_all(
                         name='div', class_='formSectionHeader6_TEXT')
                     newnumbers = list(map(lambda x: x.text, newnumbers))
+
+                    # If it is the last page, check if last button is disabled. Then End Search.
+                    end_disabled_button = new_navigation.find('input', attrs={'type': 'submit',
+                                                                            'disabled': 'disabled',
+                                                                            'value': 'Last'})
+                    if end_disabled_button:
+                        logger.info("Reached The End of The Search Results.")
+                        end = True
+                        break
+                    
                     if next_counter == 3:
                         logger.info('Iterating too many times. Breaking loop.')
                         driver.quit()
@@ -225,9 +261,15 @@ def gebiz_scraping(url, csvname, csvheaders):
                         time.sleep(5)
                     else:
                         break
+
+                # Break the loop when the end has reached.
+                if end:
+                    break
+                
             except:
-                logger.info("Reached The End of The Search Results.")
-                break
+                logger.info("Error in Going to the Next Page.")
+                driver.quit()
+                return False
 
     except Exception as e:
         driver.quit()
@@ -237,6 +279,7 @@ def gebiz_scraping(url, csvname, csvheaders):
 
     # Stop Driver
     driver.quit()
+    export_csv(df_dict, csvname, headertuple)
     return True
 
 
@@ -260,6 +303,17 @@ def individual_page_scraping(index, row, headertuple, referencenumber, projectty
 
     # Start BeautifulSoup
     content_soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+    # If it is a second stage tender, it means that the information has already been scraped. THe award details will be scraped from the link.
+    # Thus, we should simply skip this row.
+    section_check = content_soup.find('span', text='Agency')
+    if not section_check:
+        tender_information = 'This is a Two-Stage Tender. No overview information will be available.'
+        tender_info_section = content_soup.find(text=tender_information)
+        logger.info(tender_info_section)
+        if tender_info_section:
+            logger.info('This row has been scraped previously as it is a second stage tendor project. \n')
+            return "skip"
 
     # Project Name
     projectname_regex = re.compile(".*formOutputText_.* outputText_TITLE-.*")
@@ -416,6 +470,17 @@ def individual_page_scraping(index, row, headertuple, referencenumber, projectty
 
             award_content = BeautifulSoup(driver.page_source, 'html.parser')
 
+            # There is a 2nd Stage Award? If have, open this link to access the award section.
+            award_section = award_content.find(text='Awarded to')
+            if not award_section:
+                logger.warning("Need to access second stage award.")
+                award_link = driver.find_element_by_xpath("//a[contains(@class, 'commandLink_SECONDARY-') and @href='#' and @type='link']")
+                driver.execute_script("arguments[0].click();", award_link)
+                # Wait for it to load to the next tab
+                wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located((By.XPATH, "//div[@class='formSectionHeader4_TEXT' and contains(text(),'Awarding')]")))
+                # Need to rescrape the page
+                award_content = BeautifulSoup(driver.page_source, 'html.parser')
+
             # Awarded To
             award_section = award_content.find(text='Awarded to')
             award_parent = award_section.find_parent('table')
@@ -555,32 +620,56 @@ def skip_rows(skip_counter, driver):
     finally:
         return True
 
-def duplicate_entry(referencenumber, projecttype, status, df_dict):
+def duplicate_entry(referencenumber, projecttype, status, df_dict, headertuple):
     """
     Determine if the row needs to be scraped again or not. 
     This can be done by checking the reference number, projecttype and the status of the project.
     """
     if referencenumber in df_dict:
+
         if df_dict[referencenumber][headertuple.curstatus] == status and \
             df_dict[referencenumber][headertuple.projtype] == projecttype:
-            return True
+
+            if headertuple.lastupdated in df_dict[referencenumber]:
+                if df_dict[referencenumber][headertuple.lastupdated]:
+                     if str(df_dict[referencenumber][headertuple.lastupdated]).lower() != 'nan':
+                        return True
     
     return False
 
-def export_csv(df_dict, csvname):
+def download_csv(s3bucket, s3path, csvname):
+    """
+    Download CSV from S3 Bucket
+    """
+    s3 = boto3.resource('s3', region_name='ap-southeast-1')
+    bucket = s3.Bucket(s3bucket)
+    if bucket.objects.filter(Prefix=s3path):
+        bucket.download_file(s3path, csvname)
+        return True
+    else:
+        return False
+
+def upload_csv(s3bucket, s3path, csvname):
+    """
+    Upload CSV from local folder to S3 Bucket
+    """
+    s3 = boto3.resource('s3', region_name='ap-southeast-1')
+    bucket = s3.Bucket(s3bucket)
+    s3.meta.client.upload_file(csvname, s3bucket, s3path)
+    if bucket.objects.filter(Prefix=s3path):
+        return True
+    else:
+        return False
+
+def export_csv(df_dict, csvname, headertuple):
+    """
+    Export CSV to local directory.
+    """
     df = pd.DataFrame(df_dict).T
     df.index.names = [headertuple.refno]
+    df.sort_values(by=[headertuple.lastupdated, headertuple.pubdate], ascending=False)
     df.to_csv(csvname, index=True)
-
     return True
-
-def export_googlesheets():
-    """
-    Let's try to autoupdate googlesheets so this can be completely automated.
-    """
-
-
-
 
 
 # Script to Run

@@ -1,5 +1,28 @@
-*.vscode
+# Media
+*.mp4
+*.png
+*.mov
+
+# Python Files
+*.pyc
+__pychache__
 *.ipynb_checkpoints
+
+# Environment FIles
+*.env
+
+# Formatting
+*.DS_Store
+*.DS_STORE
+*.mypy*
+*.vscode
+*.sublime-workspace
+
+# Output Files
 *.out
 *.csv
-*.DS_STORE
+*.model
+*.h5
+
+# Secrets
+secrets.yaml
