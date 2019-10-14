@@ -75,6 +75,10 @@ def main():
 
     # Upload the CSV File
     upload_csv(config['s3bucket'], config['s3path'], config['csvname'])
+
+    # Remove CSV file from Local Directory
+    delete_csv(config['csvname'])
+
     
     logger.info("Final Length of Projects Scraped: %s" % len(df_dict))
     logger.info("Task Took %s min" % (duration/60))
@@ -95,7 +99,7 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
 
     # Start Browser
     options = Options()
-    options.headless = True
+    # options.headless = True
     options.add_argument("--window-size=1920,1920")
     options.add_argument("--incognito")
     driver = webdriver.Chrome(
@@ -669,6 +673,13 @@ def export_csv(df_dict, csvname, headertuple):
     df.index.names = [headertuple.refno]
     df.sort_values(by=[headertuple.lastupdated, headertuple.pubdate], ascending=False)
     df.to_csv(csvname, index=True)
+    return True
+
+def delete_csv(csvname):
+    """
+    Delete CSV from local directory
+    """
+    os.remove(csvname)
     return True
 
 

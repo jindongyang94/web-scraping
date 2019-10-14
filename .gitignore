@@ -26,3 +26,4 @@ __pychache__
 
 # Secrets
 secrets.yaml
+config/*.json
