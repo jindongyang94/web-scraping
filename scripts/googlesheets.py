@@ -5,15 +5,19 @@ The purpose of this script is to export the csv from the s3 csv file to google s
 from __future__ import print_function
 
 import csv
+import json
+import os
+from glob import glob
+from pprint import pformat
 
 import gspread
 from gspread_formatting import *
 from oauth2client.service_account import ServiceAccountCredentials
 from yaml import Loader, load
 
-from scripts.gebiz_scraping import download_csv, delete_csv
+from webscraping.gebiz.scripts.gebiz_scraping import (CONFIG, delete_csv,
+                                                      download_csv, logger)
 
-CONFIG = 'config/config.yaml'
 
 def main():
     """
@@ -30,7 +34,13 @@ def main():
     # Send to Google Sheets
     sheetid = '1crg3PNJeZow3qh-NNn55zaODVJEn02trJj-U04sgTY8'
     sheetname = 'Sheet1'
-    credentialpath = 'config/webscraping-2babb711d71d.json'
+    credentialpath = glob('config/*.json')
+    # If there is no json authentication, create the json file from the secrets volume mounted
+    if not credentialpath:
+        credentialpath = create_credentials('config/credentials.json')
+    else:
+        credentialpath = str(credentialpath[0])
+
     uploaded = upload_googlesheets(csvname, sheetid, sheetname, credentialpath)
 
     # Format cells if possible
@@ -42,6 +52,7 @@ def main():
 
     # Return Success Signal
     if deleted:
+        logger.info('Successfully exported CSV and deleted from local directory.')
         return True
 
 
@@ -92,9 +103,34 @@ def format_googlesheets(sheetid, sheetname, credentialpath):
     set_frozen(worksheet, rows=1, cols=1)
 
     return True
+
+
+def create_credentials(credentialpath):
+    """
+    Extract credentials from secret mount path and create json file to put in
+    modules/webscraping/gebiz/config/credentials.json
+    """
+    secret_googlesheetpath = '/etc/googlesheets_secret'
+    secrets = glob(os.path.join(secret_googlesheetpath, "*"))
+    secret_dict = {}
+
+    for secret in secrets:
+        with open(secret, 'r') as f:
+            basename = os.path.basename(secret)
+            secret_dict[basename] = f.read()
+
+    with open(credentialpath, 'w') as f:
+        json.dump(secret_dict, f)
+
+    logger.info('GoogleSheets Credentials:\n')
+    for line in pformat(secret_dict).split('\n'):
+        logger.info(line)
+    logger.info('\n')
+
+    if glob(credentialpath):
+        return credentialpath
+        
     
-
-
 
 if __name__ == '__main__':
     main()

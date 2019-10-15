@@ -671,7 +671,11 @@ def export_csv(df_dict, csvname, headertuple):
     """
     df = pd.DataFrame(df_dict).T
     df.index.names = [headertuple.refno]
-    df.sort_values(by=[headertuple.lastupdated, headertuple.pubdate], ascending=False)
+    # Set default update to 2019-10-04
+    # df[headertuple.lastupdated].fillna('2019-10-04')
+    # Replace all "Not Applicable" to nan instead
+    # df = df.replace('Not Applicable', float('NaN'))
+    df = df.sort_values(by=[headertuple.lastupdated, headertuple.awardedval], ascending=[False, False])
     df.to_csv(csvname, index=True)
     return True
 
