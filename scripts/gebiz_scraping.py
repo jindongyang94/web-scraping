@@ -17,6 +17,7 @@ import boto3
 import numpy as np
 import pandas as pd
 import requests
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -102,6 +103,10 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
     # options.headless = True
     options.add_argument("--window-size=1920,1920")
     options.add_argument("--incognito")
+    options.add_argument('--headless')
+    # The following arguments are for usage in docker containers, if not it is not necessary.
+    # options.add_argument('--no-sandbox')
+    # options.add_argument("--disable-setuid-sandbox")
     driver = webdriver.Chrome(
         options=options, executable_path=r'/usr/local/bin/chromedriver')
     driver.get(url)
@@ -118,6 +123,20 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
     # Activate the Construction Filter
     filter_button = driver.find_element_by_xpath(
         "//input[contains(@name, 'GroupOption_Construction') and @value='Construction']")
+    filter_button.click()
+
+    # Activate the Facilities Management Filters - 1.Building, M&E Maintenance 2.Cleaning Services 3.Pest Management Services 4.Security Services
+    filter_button = driver.find_element_by_xpath(
+        "//input[contains(@name, 'Facilities Management_Option_100049') and @value='100049']")
+    filter_button.click()
+    filter_button = driver.find_element_by_xpath(
+        "//input[contains(@name, 'Facilities Management_Option_100046') and @value='100046']")
+    filter_button.click()
+    filter_button = driver.find_element_by_xpath(
+        "//input[contains(@name, 'Facilities Management_Option_100047') and @value='100047']")
+    filter_button.click()
+    filter_button = driver.find_element_by_xpath(
+        "//input[contains(@name, 'Facilities Management_Option_100044') and @value='100044']")
     filter_button.click()
 
     # Go to the Closed Tab
@@ -213,7 +232,7 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
                     logger.info('\n')
 
                 # Sleep here to prevent suspicious bot activities
-                time.sleep(randint(1, 4))
+                time.sleep(randint(1, 3))
 
                 # Go back to Search Results
                 back_button = driver.find_element_by_xpath(
@@ -232,6 +251,9 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
                     "//input[@class='formRepeatPagination2_NAVIGATION-BUTTON' and @value='Next']")
                 next_button.click()
                 logger.info('Going Next Page \n')
+
+                # Before scraping all information from the next page, update the csv on S3 if there exist a bucket for it.
+                upload = upload_csv(s3bucket, s3path, csvname)
                 time.sleep(3)
 
                 # Make sure the page is reloaded with new links, then go next
@@ -643,26 +665,34 @@ def duplicate_entry(referencenumber, projecttype, status, df_dict, headertuple):
 
 def download_csv(s3bucket, s3path, csvname):
     """
-    Download CSV from S3 Bucket
+    Download CSV from S3 Bucket.
+    If cannot download, just return False.
     """
-    s3 = boto3.resource('s3', region_name='ap-southeast-1')
-    bucket = s3.Bucket(s3bucket)
-    if bucket.objects.filter(Prefix=s3path):
-        bucket.download_file(s3path, csvname)
-        return True
-    else:
+    try:
+        s3 = boto3.resource('s3', region_name='ap-southeast-1')
+        bucket = s3.Bucket(s3bucket)
+        if bucket.objects.filter(Prefix=s3path):
+            bucket.download_file(s3path, csvname)
+            return True
+        else:
+            return False
+    except (ClientError, NoCredentialsError, BotoCoreError):
         return False
 
 def upload_csv(s3bucket, s3path, csvname):
     """
     Upload CSV from local folder to S3 Bucket
+    If cannot download, just return False.
     """
-    s3 = boto3.resource('s3', region_name='ap-southeast-1')
-    bucket = s3.Bucket(s3bucket)
-    s3.meta.client.upload_file(csvname, s3bucket, s3path)
-    if bucket.objects.filter(Prefix=s3path):
-        return True
-    else:
+    try:
+        s3 = boto3.resource('s3', region_name='ap-southeast-1')
+        bucket = s3.Bucket(s3bucket)
+        s3.meta.client.upload_file(csvname, s3bucket, s3path)
+        if bucket.objects.filter(Prefix=s3path):
+            return True
+        else:
+            return False
+    except (ClientError, NoCredentialsError, BotoCoreError):
         return False
 
 def export_csv(df_dict, csvname, headertuple):
