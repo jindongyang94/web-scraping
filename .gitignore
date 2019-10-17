@@ -5,7 +5,7 @@
 
 # Python Files
 *.pyc
-__pychache__
+*__pycache__*
 *.ipynb_checkpoints
 
 # Environment FIles
