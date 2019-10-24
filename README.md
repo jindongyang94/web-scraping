@@ -18,7 +18,7 @@ However, after the navigation is complete, we will complement the scripting with
 
 This is script can be uploaded to an automation orchestration framework such as Airflow on Kubernetes to be run periodically.  
 It is also possible to allow the automated upload of the csv to some user friendly source such as Google Sheets.  
-To do so, simply follow instructions online to download credentials: https://gspread.readthedocs.io/en/latest/oauth2.html . 
+To do so, simply follow instructions online to download credentials: https://gspread.readthedocs.io/en/latest/oauth2.html   
 Run the script *googlesheets.py* afterwards.
 
 *Note: if you want to witness the interaction so as to debug, comment out the headless option. However, to use the headless option properly, please uncomment out the display specifics in the next line.*
