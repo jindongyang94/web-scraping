@@ -26,6 +26,8 @@ from selenium.webdriver.support import expected_conditions as ec
 from selenium.webdriver.support.ui import WebDriverWait
 from yaml import Loader, load
 
+CONFIG = 'config/config.yaml'
+
 # Logger -----------------------------------------------------------------------------------------------
 try:
     import colorlog
@@ -63,7 +65,7 @@ logger = create_logger()
 def main():
     starttime = time.time()
 
-    config = load(open('config/config.yaml'), Loader=Loader)
+    config = load(open(CONFIG), Loader=Loader)
     full_scraping = gebiz_scraping(**config)
     if full_scraping:
         logger.info("Process is fully completed.")
@@ -74,11 +76,13 @@ def main():
     df = pd.read_csv(config['csvname'], header=0).set_index(config['csvheaders']['refno'])
     df_dict = df.T.to_dict('dict')
 
-    # Upload the CSV File
+    # Upload the CSV File - If you are not planning to upload to S3, simply comment this line.
     upload_csv(config['s3bucket'], config['s3path'], config['csvname'])
 
     # Remove CSV file from Local Directory
-    delete_csv(config['csvname'])
+    deleted = delete_csv(config['csvname'])
+    if deleted:
+        logger.info("Local CSV Deleted.")
 
     
     logger.info("Final Length of Projects Scraped: %s" % len(df_dict))
@@ -103,13 +107,17 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
     # options.headless = True
     options.add_argument("--window-size=1920,1920")
     options.add_argument("--incognito")
-    # options.add_argument('--headless')
+    options.add_argument('--headless')
     # The following arguments are for usage in docker containers, if not it is not necessary.
     # options.add_argument('--no-sandbox')
     # options.add_argument("--disable-setuid-sandbox")
     driver = webdriver.Chrome(
         options=options, executable_path=r'/usr/local/bin/chromedriver')
     driver.get(url)
+
+    # Make script wait for page to load first
+    wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located(
+        (By.XPATH, "//input[@class='selectManyMenu_BUTTON' and @value='All' and @type='button']")))
 
     # Click to the menu page
     menu_button = driver.find_elements_by_xpath(
@@ -152,10 +160,11 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
     wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located(
         (By.XPATH, "//div[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Others']")))
 
+    # This statement here downloads the csv file from S3. If you rather not do that, simply comment this line out.
+    download = download_csv(s3bucket, s3path, csvname)
     # Full Dataset
     # If there is an existing csv, simply open the whole thing in pandas
     # It is actually better to save the results as a dictionary of dictionaries and then convert to df back later for faster processing
-    download = download_csv(s3bucket, s3path, csvname)
     if download and os.path.exists(csvname):
         df = pd.read_csv(csvname, header=0).set_index(headertuple.refno)
         df_dict = df.T.to_dict('dict')
@@ -292,7 +301,9 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
                 if end:
                     break
                 
-            except:
+            except Exception as e:
+                logger.info(e)
+                logger.info(traceback.print_tb(e.__traceback__))
                 logger.info("Error in Going to the Next Page.")
                 driver.quit()
                 return False
@@ -360,7 +371,6 @@ def individual_page_scraping(index, row, headertuple, referencenumber, projectty
     closed_text = content_soup.find(text='Closed')
     closed_section = closed_text.find_parent(
         'div', attrs={'class': 'formColumns_COLUMN-TABLE'})
-    # closed_section = closed_section.find_parent('tbody')
     closed_regex = re.compile('formOutputText_HIDDEN-LABEL outputText_NAME-.*')
     closed_date = closed_section.find(
         'div', attrs={'class': closed_regex}).text
@@ -715,7 +725,10 @@ def delete_csv(csvname):
     Delete CSV from local directory
     """
     os.remove(csvname)
-    return True
+    if os.path.exists(csvname):
+        return False
+    else:
+        return True
 
 
 # Script to Run
