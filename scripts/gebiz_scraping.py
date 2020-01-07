@@ -103,7 +103,7 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
     # options.headless = True
     options.add_argument("--window-size=1920,1920")
     options.add_argument("--incognito")
-    options.add_argument('--headless')
+    # options.add_argument('--headless')
     # The following arguments are for usage in docker containers, if not it is not necessary.
     # options.add_argument('--no-sandbox')
     # options.add_argument("--disable-setuid-sandbox")
@@ -150,7 +150,7 @@ def gebiz_scraping(url, csvname, csvheaders, s3bucket, s3path):
 
     # Make script wait for page to load for the filter to work
     wait = WebDriverWait(driver, 5).until(ec.presence_of_element_located(
-        (By.XPATH, "//tr[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Civil Engineering']")))
+        (By.XPATH, "//div[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Others']")))
 
     # Full Dataset
     # If there is an existing csv, simply open the whole thing in pandas
@@ -316,7 +316,7 @@ def individual_page_scraping(index, row, headertuple, referencenumber, projectty
     """
     # Wait for page to come back to filtered results
     wait = WebDriverWait(driver, 10).until(ec.presence_of_element_located(
-        (By.XPATH, "//tr[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Civil Engineering']")))
+        (By.XPATH, "//div[@class='selectManyMenu_SELECTED-ITEM-TR' and @title='Construction &#8658; Others']")))
 
     # Click onto the current link
     link = driver.find_elements_by_xpath(
@@ -359,8 +359,8 @@ def individual_page_scraping(index, row, headertuple, referencenumber, projectty
     # Closed Date
     closed_text = content_soup.find(text='Closed')
     closed_section = closed_text.find_parent(
-        'table', attrs={'class': 'form2_ROW-TABLE'})
-    closed_section = closed_section.find_parent('tbody')
+        'div', attrs={'class': 'formColumns_COLUMN-TABLE'})
+    # closed_section = closed_section.find_parent('tbody')
     closed_regex = re.compile('formOutputText_HIDDEN-LABEL outputText_NAME-.*')
     closed_date = closed_section.find(
         'div', attrs={'class': closed_regex}).text
@@ -564,7 +564,8 @@ def find_value_via_row(soup, header_text):
     Helper Method to find specific content
     """
     section = soup.find('span', text=header_text)
-    parent = section.find_parent("tr")
+    regex = re.compile('row.*form2_ROW-TABLE.*')
+    parent = section.find_parent("div", attrs={'class': regex})
     value = parent.find('div', class_='formOutputText_VALUE-DIV').text
     return value
 
